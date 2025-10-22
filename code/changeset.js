@@ -3,6 +3,7 @@ var typeColumn = null;
 var nameColumn = null;
 var numCallsInProgress = 0;
 var totalComponentCount = 0; // Track total rows loaded for pagination decisions
+var isLoadingMorePages = false; // Flag to indicate we're still loading pages in background
 
 var entityTypeMap = {
     'TabSet': 'CustomApplication',
@@ -67,20 +68,26 @@ var entityFolderMap = {
 }
 
 
+// Helper function to add columns to specific rows (avoids freezing with large datasets)
+function addColumnsToRows(rows) {
+    if (typeColumn.length == 0) {
+        rows.append("<td>&nbsp;</td>");
+    }
+    rows.append("<td>Unknown</td>"); // Folder
+    rows.append("<td>Unknown</td>"); // Date Modified
+    rows.append("<td>Unknown</td>"); // Modified by
+    rows.append("<td>&nbsp;</td>");  // Compare Date Modified
+    rows.append("<td>&nbsp;</td>");  // Compare Modified by
+    rows.append("<td>Unknown</td>"); // Full name
+}
+
 function setupTable() {
     typeColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Type')");
     nameColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Name')");
 
-    var shortid = '';
-    var dateMod = '';
-    var dateCreate = '';
-    var selector = '';
-    var thisRow;
-    var selector;
+    // Add header columns (only once)
     if (typeColumn.length == 0) {
         $("table.list tr.headerRow").append("<td>&nbsp;</td>");
-        $("table.list tr.dataRow").append("<td>&nbsp;</td>");
-
     }
     $("table.list tr.headerRow").append("<td>Folder</td>");
     $("table.list tr.headerRow").append("<td>Date Modified</td>");
@@ -89,34 +96,26 @@ function setupTable() {
     $("table.list tr.headerRow").append("<td><span class='compareOrgName'></span> Modified by</td>");
     $("table.list tr.headerRow").append("<td>Full name</td>");
 
-    $("table.list tr.dataRow").append("<td>Unknown</td>");
-    $("table.list tr.dataRow").append("<td>Unknown</td>");
-    $("table.list tr.dataRow").append("<td>Unknown</td>");
-    $("table.list tr.dataRow").append("<td>&nbsp;</td>");
-    $("table.list tr.dataRow").append("<td>&nbsp;</td>");
-    $("table.list tr.dataRow").append("<td>Unknown</td>");
-
+    // Add columns only to existing rows (not ALL rows to avoid freeze)
+    var existingRows = $("table.list tr.dataRow");
+    addColumnsToRows(existingRows);
 
     var changeSetHead = $('<thead></thead>').prependTo('table.list').append($('table.list tr:first'));
     changeSetHead.after('<tfoot><tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr></tfoot>');
 
-
     var gotoloc1 = "'/" + $("#id").val() + "?tab=PackageComponents&rowsperpage=5000'";
     $('input[name="cancel"]')
         .before('<input value="View change set" class="btn" name="viewall" title="View all items in changeset in new window" type="button" onclick="window.open(' + gotoloc1 +',\'_blank\');" />')
-        .after(`<br /><input value="Compare with org" class="btn compareorg" name="compareorg" id="compareorg" 
+        .after(`<br /><input value="Compare with org" class="btn compareorg" name="compareorg" id="compareorg"
 					title="Compare wtih another org. A login box will be displayed." type="button" />
 		<select id='compareEnv' name='Compare Environment'>
 			<option value='sandbox'>Sandbox</option>
 			<option value='prod'>Prod/Dev</option>
-		</select> 
+		</select>
 	<span id="loggedInUsername"></span>  <span id="logout">(<a id="logoutLink" href="#">Logout</a>)</span>
 `);
 
-
     $('#editPage').append('<input type="hidden" name="rowsperpage" value="5000" /> ');
-
-
 }
 
 function convertDate(dateToconvert) {
@@ -233,11 +232,16 @@ function createDataTable() {
     }
 
     // Enable pagination for large datasets to improve performance
-    var enablePaging = totalComponentCount >= ENABLE_PAGINATION_THRESHOLD;
+    // Enable if: 1) We already have enough rows, OR 2) We're still loading more pages (will exceed threshold)
+    var enablePaging = totalComponentCount >= ENABLE_PAGINATION_THRESHOLD || isLoadingMorePages;
     var domLayout = enablePaging ? 'lprti' : 'lrti'; // Add 'p' for pagination controls
 
     if (enablePaging) {
-        console.log(`Large dataset detected (${totalComponentCount} rows) - enabling pagination for better performance`);
+        if (isLoadingMorePages) {
+            console.log(`Loading more pages - enabling pagination (currently ${totalComponentCount} rows, more coming)`);
+        } else {
+            console.log(`Large dataset detected (${totalComponentCount} rows) - enabling pagination for better performance`);
+        }
     }
 
     //Create the datatable
@@ -514,16 +518,34 @@ if (listTableLength >= 1000) {
 
     if (confirm(confirmMsg)) {
         shouldContinuePagination = true;
+        isLoadingMorePages = true; // Flag that we're loading additional pages
 
-        // Create progress indicator
+        // Create progress indicator with animated indeterminate progress bar
         var progressHtml = `
+            <style>
+                @keyframes csh-indeterminate {
+                    0% { left: -35%; right: 100%; }
+                    60% { left: 100%; right: -90%; }
+                    100% { left: 100%; right: -90%; }
+                }
+                .csh-progress-indeterminate {
+                    position: absolute;
+                    background-color: #0070d2;
+                    top: 0;
+                    bottom: 0;
+                    animation: csh-indeterminate 1.5s cubic-bezier(0.65, 0.815, 0.735, 0.395) infinite;
+                }
+                .csh-progress-determinate {
+                    transition: width 0.3s ease;
+                }
+            </style>
             <div id="csh-pagination-progress" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
                  background: white; border: 3px solid #0070d2; border-radius: 8px; padding: 20px; z-index: 10000;
                  box-shadow: 0 4px 16px rgba(0,0,0,0.3); min-width: 400px;">
                 <h3 style="margin: 0 0 15px 0; color: #0070d2;">Loading Components...</h3>
                 <div style="margin-bottom: 10px;">
-                    <div style="background: #f3f3f3; border-radius: 4px; height: 24px; overflow: hidden;">
-                        <div id="csh-progress-bar" style="background: #0070d2; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    <div style="background: #f3f3f3; border-radius: 4px; height: 24px; overflow: hidden; position: relative;">
+                        <div id="csh-progress-bar" class="csh-progress-indeterminate"></div>
                     </div>
                 </div>
                 <div id="csh-progress-text" style="margin-bottom: 10px; color: #333;">
@@ -568,20 +590,42 @@ if (listTableLength >= 1000) {
         var totalRowsLoaded = 1000;
         var currentPage = 1;
         var startTime = Date.now();
-        var lastPageTime = startTime;
+        var tableInitialized = false;
 
         async function fetchNextPage() {
+            // Initialize table with first 1000 rows immediately (don't wait for all pages)
+            if (!tableInitialized && currentPage === 1) {
+                tableInitialized = true;
+                totalComponentCount = totalRowsLoaded; // Will be updated as more rows load
+                console.log(`Initializing table with first ${totalRowsLoaded} rows...`);
+
+                // Initialize table immediately so user sees it right away
+                startMetadataLoading();
+
+                // Update progress to show table is visible
+                $('#csh-progress-text').html(
+                    `<span style="color: #16844c;">✓ Table visible with ${totalRowsLoaded.toLocaleString()} rows</span><br>` +
+                    `Loading more in background...`
+                );
+            }
+
             if (!shouldContinuePagination || listTableLength < 1000) {
-                // Done loading - cleanup and proceed
+                // Done loading all pages - cleanup
                 $('#csh-pagination-progress').remove();
                 $('#csh-pagination-overlay').remove();
 
-                // Store total count for DataTables pagination decision
+                // Final update
                 totalComponentCount = totalRowsLoaded;
+                isLoadingMorePages = false; // Clear the flag - pagination complete
                 console.log(`Pagination complete: ${totalComponentCount} total rows loaded`);
 
-                // Call startMetadataLoading to properly setup table and load metadata
-                startMetadataLoading();
+                // Redraw table to show final count
+                if (changeSetTable) {
+                    changeSetTable.draw();
+                }
+
+                $("#editPage").removeClass("lowOpacity");
+                $("#bodyCell").removeClass("changesetloading");
                 return;
             }
 
@@ -601,24 +645,61 @@ if (listTableLength >= 1000) {
 
                 var parsedResponse = $(data);
                 var nextTable = parsedResponse.find("table.list tr.dataRow");
-                nextTable.appendTo("table.list");
+
+                // If table is already initialized, add columns to new rows before appending
+                if (tableInitialized && selectedEntityType in entityTypeMap) {
+                    addColumnsToRows(nextTable);
+                }
+
+                nextTable.appendTo("table.list tbody");
                 listTableLength = nextTable.length;
                 nextPageLsr = nextPageLsr + listTableLength;
                 totalRowsLoaded += listTableLength;
                 currentPage++;
 
+                // If table is initialized, add new rows to DataTable incrementally
+                if (tableInitialized && changeSetTable) {
+                    // Add new rows to DataTable
+                    var newRowNodes = nextTable.toArray();
+                    changeSetTable.rows.add(newRowNodes);
+
+                    // Batch draw updates: only redraw every 5 pages or on last page for better performance
+                    if (currentPage % 5 === 0 || listTableLength < 1000) {
+                        changeSetTable.draw(false); // draw(false) = no full redraw, faster
+                    }
+
+                    // Update the total count
+                    totalComponentCount = totalRowsLoaded;
+                }
+
                 // Calculate time estimates
                 var now = Date.now();
                 var avgTimePerPage = (now - startTime) / currentPage;
 
-                // Update progress UI (indeterminate progress since we don't know total pages)
-                var progressPercent = listTableLength < 1000 ? 100 : 50; // Show 50% while loading, 100% when done
-                $('#csh-progress-bar').css('width', progressPercent + '%');
-                $('#csh-progress-text').html(
-                    `Loaded: <strong>${totalRowsLoaded.toLocaleString()}</strong> rows | ` +
-                    `Current page: <strong>${currentPage}</strong>` +
-                    (listTableLength < 1000 ? ' | <em>Last page reached</em>' : '')
-                );
+                // Update progress bar - switch to determinate 100% on completion
+                if (listTableLength < 1000) {
+                    // Completed - switch to determinate mode and show 100%
+                    $('#csh-progress-bar')
+                        .removeClass('csh-progress-indeterminate')
+                        .addClass('csh-progress-determinate')
+                        .css('width', '100%');
+                }
+                // Otherwise, let the indeterminate animation run (don't set width)
+
+                if (tableInitialized) {
+                    $('#csh-progress-text').html(
+                        `<span style="color: #16844c;">✓ Table visible</span> | ` +
+                        `Total: <strong>${totalRowsLoaded.toLocaleString()}</strong> rows | ` +
+                        `Page: <strong>${currentPage}</strong>` +
+                        (listTableLength < 1000 ? ' | <em>Complete!</em>' : '')
+                    );
+                } else {
+                    $('#csh-progress-text').html(
+                        `Loaded: <strong>${totalRowsLoaded.toLocaleString()}</strong> rows | ` +
+                        `Current page: <strong>${currentPage}</strong>` +
+                        (listTableLength < 1000 ? ' | <em>Last page reached</em>' : '')
+                    );
+                }
 
                 // Update time estimate
                 if (listTableLength >= 1000) {
@@ -626,12 +707,12 @@ if (listTableLength >= 1000) {
                         `Average: ${(avgTimePerPage / 1000).toFixed(1)}s per page`
                     );
                 } else {
-                    $('#csh-progress-estimate').html('Finalizing...');
+                    $('#csh-progress-estimate').html('Complete!');
                 }
 
                 // Continue to next page with a small delay to keep UI responsive
                 if (listTableLength >= 1000 && shouldContinuePagination) {
-                    setTimeout(fetchNextPage, 100); // Small delay to allow UI updates
+                    setTimeout(fetchNextPage, 50); // Small delay to allow UI updates (reduced since we batch draws)
                 } else {
                     // Finished
                     shouldContinuePagination = false;
@@ -646,15 +727,15 @@ if (listTableLength >= 1000) {
             }
         }
 
-        // Start fetching
+        // Start fetching (will initialize table after first iteration)
         fetchNextPage();
     } else {
-        // User cancelled pagination - proceed with first 1000 rows
+        // User cancelled pagination - proceed with first 1000 rows only
         totalComponentCount = 1000;
         startMetadataLoading();
     }
 } else {
-    // Less than 1000 rows - proceed immediately
+    // Less than 1000 rows - proceed immediately (no pagination needed)
     totalComponentCount = listTableLength;
     startMetadataLoading();
 }

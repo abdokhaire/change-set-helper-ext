@@ -2,9 +2,9 @@
 "update_url": "https://clients2.google.com/service/update2/crx",
 
   "manifest_version": 3,
-  "name": "Salesforce Change Set Helper",
+  "name": "Salesforce Change Set Helper Reloaded",
   "description": "Enhances the Salesforce change set. Adds last changed date and allows sorting, searching, validation and comparison with other orgs.",
-  "version": "3.0.0",
+  "version": "3.0.1",
   "options_page": "options.html",
   "action": {
     "default_icon": "braincloudsmall.png",

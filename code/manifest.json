@@ -1,12 +1,12 @@
 {
 "update_url": "https://clients2.google.com/service/update2/crx",
 
-  "manifest_version": 2,
+  "manifest_version": 3,
   "name": "Salesforce Change Set Helper",
   "description": "Enhances the Salesforce change set. Adds last changed date and allows sorting, searching, validation and comparison with other orgs.",
   "version": "3.0.0",
   "options_page": "options.html",
-  "browser_action": {
+  "action": {
     "default_icon": "braincloudsmall.png",
     "default_popup": "popup.html"
   },
@@ -96,22 +96,24 @@
     }
   ],
   "permissions": [
+    "identity",
+    "storage",
+    "offscreen"
+  ],
+  "host_permissions": [
     "https://*.com/p/mfpkg/AddToPackageFromChangeMgmtUi*",
     "https://*.com/p/mfpkg/AddToPackageUi*",
     "https://*.com/*tab=PackageComponents*",
     "https://*.com/changemgmt/outboundChangeSetDetailPage.apexp*",
-    "https://*.salesforce.com/services/*",
-    "identity",
-    "storage"
+    "https://*.salesforce.com/services/*"
   ],
   "background": {
-    "scripts": [
-      "background.js",
-      "lib/jsforce.js"
-    ],
-    "persistent": false
+    "service_worker": "background.js"
   },
   "web_accessible_resources": [
-    "loading.gif"
+    {
+      "resources": ["loading.gif"],
+      "matches": ["https://*.salesforce.com/*", "https://*.force.com/*"]
+    }
   ]
 }

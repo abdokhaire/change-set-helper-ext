@@ -2,6 +2,7 @@ var changeSetTable = null;
 var typeColumn = null;
 var nameColumn = null;
 var numCallsInProgress = 0;
+var totalComponentCount = 0; // Track total rows loaded for pagination decisions
 
 var entityTypeMap = {
     'TabSet': 'CustomApplication',
@@ -230,12 +231,24 @@ function createDataTable() {
     if (selectedEntityType in entityFolderMap) {
         hasFolder = true;
     }
+
+    // Enable pagination for large datasets to improve performance
+    var enablePaging = totalComponentCount >= ENABLE_PAGINATION_THRESHOLD;
+    var domLayout = enablePaging ? 'lprti' : 'lrti'; // Add 'p' for pagination controls
+
+    if (enablePaging) {
+        console.log(`Large dataset detected (${totalComponentCount} rows) - enabling pagination for better performance`);
+    }
+
     //Create the datatable
     try {
         changeSetTable = $('div.bPageBlock > div.pbBody > table.list').DataTable({
-            paging: false,
-            dom: 'lrti',
+            processing: true,
+            paging: enablePaging,
+            pageLength: 100,  // Show 100 rows per page when pagination is enabled
+            dom: domLayout,
             "order": [[4, "desc"]],
+            "deferRender": true,  // Performance optimization for large datasets
             "columns": [
                 {"searchable": false, "orderable": false}, //checkbox
                 null, //name
@@ -489,52 +502,179 @@ if (nextPageHref) {
     nextPageHref = serverUrl + '/p/mfpkg/AddToPackageFromChangeMgmtUi' ;
     //console.log(nextPageHref + changeSetId + selectedEntityType);
 }
-var confirmMessage = "There are more than a 1000 rows. Would you like me to get the next 1000?  Cancel and we'll finish with what's there so far."
+// Async pagination to avoid blocking the browser
 var nextPageLsr = 1000;
+var shouldContinuePagination = false;
+var ENABLE_PAGINATION_THRESHOLD = 1500; // Enable DataTables paging above this threshold
 
-while (listTableLength == 1000) {
-    //Get Next page...
-    //console.log("Next page is: " + nextPageHref);
-    if (confirm(confirmMessage) == true) {
+// Show initial confirmation for large datasets
+if (listTableLength >= 1000) {
+    var confirmMsg = "There are more than 1,000 rows. Would you like to load all pages?\n\n";
+    confirmMsg += "Click OK to continue, Cancel to work with the first 1,000 rows.";
+
+    if (confirm(confirmMsg)) {
+        shouldContinuePagination = true;
+
+        // Create progress indicator
+        var progressHtml = `
+            <div id="csh-pagination-progress" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+                 background: white; border: 3px solid #0070d2; border-radius: 8px; padding: 20px; z-index: 10000;
+                 box-shadow: 0 4px 16px rgba(0,0,0,0.3); min-width: 400px;">
+                <h3 style="margin: 0 0 15px 0; color: #0070d2;">Loading Components...</h3>
+                <div style="margin-bottom: 10px;">
+                    <div style="background: #f3f3f3; border-radius: 4px; height: 24px; overflow: hidden;">
+                        <div id="csh-progress-bar" style="background: #0070d2; height: 100%; width: 0%; transition: width 0.3s;"></div>
+                    </div>
+                </div>
+                <div id="csh-progress-text" style="margin-bottom: 10px; color: #333;">
+                    Loaded: <strong>1,000</strong> rows | Current page: <strong>1</strong>
+                </div>
+                <div id="csh-progress-estimate" style="margin-bottom: 15px; font-size: 12px; color: #666;">
+                    Calculating...
+                </div>
+                <button id="csh-cancel-pagination" style="background: #c23934; color: white; border: none;
+                        padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">
+                    Cancel Loading
+                </button>
+            </div>
+            <div id="csh-pagination-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+                 background: rgba(0,0,0,0.5); z-index: 9999;"></div>
+        `;
+        $('body').append(progressHtml);
+
+        // Add cancel handler
+        $('#csh-cancel-pagination').click(function() {
+            shouldContinuePagination = false;
+            $('#csh-pagination-progress').remove();
+            $('#csh-pagination-overlay').remove();
+            $("#editPage").removeClass("lowOpacity");
+            $("#bodyCell").removeClass("changesetloading");
+            // Continue with whatever we have
+            if (selectedEntityType in entityTypeMap) {
+                chrome.runtime.sendMessage({
+                    "oauth": "connectToLocal",
+                    "sessionId": sessionId,
+                    "serverUrl": serverUrl
+                }, function (response) {
+                    getMetaData(processListResults);
+                });
+            }
+        });
+
         $("#editPage").addClass("lowOpacity");
         $("#bodyCell").addClass("changesetloading");
 
+        // Async recursive function to fetch pages
+        var totalRowsLoaded = 1000;
+        var currentPage = 1;
+        var startTime = Date.now();
+        var lastPageTime = startTime;
 
-        confirmMessage = "There are still more to get...  Shall we keep getting more?";
-        $.ajax({
-            url: nextPageHref,
-            data: {rowsperpage: 1000, isdtp: 'mn', lsr: nextPageLsr, id:changeSetId, entityType: selectedEntityType },
-            async: false,
-            success: function (data) {
+        async function fetchNextPage() {
+            if (!shouldContinuePagination || listTableLength < 1000) {
+                // Done loading - cleanup and proceed
+                $('#csh-pagination-progress').remove();
+                $('#csh-pagination-overlay').remove();
+
+                // Store total count for DataTables pagination decision
+                totalComponentCount = totalRowsLoaded;
+                console.log(`Pagination complete: ${totalComponentCount} total rows loaded`);
+
+                // Call startMetadataLoading to properly setup table and load metadata
+                startMetadataLoading();
+                return;
+            }
+
+            try {
+                // Use async AJAX
+                const data = await $.ajax({
+                    url: nextPageHref,
+                    data: {
+                        rowsperpage: 1000,
+                        isdtp: 'mn',
+                        lsr: nextPageLsr,
+                        id: changeSetId,
+                        entityType: selectedEntityType
+                    },
+                    async: true  // Non-blocking!
+                });
+
                 var parsedResponse = $(data);
                 var nextTable = parsedResponse.find("table.list tr.dataRow");
                 nextTable.appendTo("table.list");
                 listTableLength = nextTable.length;
                 nextPageLsr = nextPageLsr + listTableLength;
-                //console.log(nextPageLsr);
+                totalRowsLoaded += listTableLength;
+                currentPage++;
+
+                // Calculate time estimates
+                var now = Date.now();
+                var avgTimePerPage = (now - startTime) / currentPage;
+
+                // Update progress UI (indeterminate progress since we don't know total pages)
+                var progressPercent = listTableLength < 1000 ? 100 : 50; // Show 50% while loading, 100% when done
+                $('#csh-progress-bar').css('width', progressPercent + '%');
+                $('#csh-progress-text').html(
+                    `Loaded: <strong>${totalRowsLoaded.toLocaleString()}</strong> rows | ` +
+                    `Current page: <strong>${currentPage}</strong>` +
+                    (listTableLength < 1000 ? ' | <em>Last page reached</em>' : '')
+                );
+
+                // Update time estimate
+                if (listTableLength >= 1000) {
+                    $('#csh-progress-estimate').html(
+                        `Average: ${(avgTimePerPage / 1000).toFixed(1)}s per page`
+                    );
+                } else {
+                    $('#csh-progress-estimate').html('Finalizing...');
+                }
+
+                // Continue to next page with a small delay to keep UI responsive
+                if (listTableLength >= 1000 && shouldContinuePagination) {
+                    setTimeout(fetchNextPage, 100); // Small delay to allow UI updates
+                } else {
+                    // Finished
+                    shouldContinuePagination = false;
+                    fetchNextPage(); // Call one more time to trigger cleanup
+                }
+
+            } catch (error) {
+                console.error("Error fetching page:", error);
+                alert("Error loading page " + (currentPage + 1) + ". Continuing with " + totalRowsLoaded + " rows loaded.");
+                shouldContinuePagination = false;
+                fetchNextPage(); // Trigger cleanup
             }
-        });
+        }
+
+        // Start fetching
+        fetchNextPage();
     } else {
-        listTableLength = 0;
+        // User cancelled pagination - proceed with first 1000 rows
+        totalComponentCount = 1000;
+        startMetadataLoading();
     }
+} else {
+    // Less than 1000 rows - proceed immediately
+    totalComponentCount = listTableLength;
+    startMetadataLoading();
 }
 
+// Function to start metadata loading after pagination is complete (or skipped)
+function startMetadataLoading() {
+    if (selectedEntityType in entityTypeMap) {
+        setupTable();
+        $("#editPage").addClass("lowOpacity");
+        $("#bodyCell").addClass("changesetloading");
 
-if (selectedEntityType in entityTypeMap) {
-    setupTable();
-    $("#editPage").addClass("lowOpacity");
-    $("#bodyCell").addClass("changesetloading");
-
-    chrome.runtime.sendMessage({
-        "oauth": "connectToLocal",
-        "sessionId": sessionId,
-        "serverUrl": serverUrl
-    }, function (response) {
-        getMetaData(processListResults);
-    });
-
-
-} else {
+        chrome.runtime.sendMessage({
+            "oauth": "connectToLocal",
+            "sessionId": sessionId,
+            "serverUrl": serverUrl
+        }, function (response) {
+            getMetaData(processListResults);
+        });
+    } else {
+        // Non-mapped entity types - setup basic table
     typeColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Type')");
     nameColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Name')");
 
@@ -550,6 +690,7 @@ if (selectedEntityType in entityTypeMap) {
             paging: false,
             dom: 'lrti',
             "order": [[1, "asc"]],
+            "deferRender": true,  // Performance optimization for large datasets
             initComplete: basicTableInitComplete
         }
     );
@@ -559,7 +700,7 @@ if (selectedEntityType in entityTypeMap) {
 
     var gotoloc2 = "'/" + $("#id").val() + "?tab=PackageComponents&rowsperpage=1000'";
     $('input[name="cancel"]').before('<input value="View change set" class="btn" name="viewall" title="View all items in changeset in new window" type="button" onclick="window.open(' + gotoloc2 + ',\'_blank\');" />');
-
+    }
 }
 
 

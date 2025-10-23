@@ -28,24 +28,34 @@ function initializeOffscreen() {
     }
 
     // Initialize chrome.storage API calls after Chrome APIs are ready
-    if (typeof chrome !== 'undefined' && chrome.storage) {
-        // Get initial API version from storage
-        chrome.storage.sync.get(['salesforceApiVersion'], function(items) {
-            if (items.salesforceApiVersion) {
-                CSH_APIVERSION = versionPattern.test(items.salesforceApiVersion) ? items.salesforceApiVersion : '60.0';
-                console.log('Offscreen - API Version:', CSH_APIVERSION);
-            }
-        });
+    try {
+        if (chrome && chrome.storage && chrome.storage.sync) {
+            // Get initial API version from storage
+            chrome.storage.sync.get(['salesforceApiVersion'], function(items) {
+                if (chrome.runtime.lastError) {
+                    console.log('Could not read storage:', chrome.runtime.lastError.message);
+                    return;
+                }
+                if (items.salesforceApiVersion) {
+                    CSH_APIVERSION = versionPattern.test(items.salesforceApiVersion) ? items.salesforceApiVersion : '60.0';
+                    console.log('Offscreen - API Version:', CSH_APIVERSION);
+                }
+            });
 
-        // Listen for API version changes
-        chrome.storage.onChanged.addListener(function (changes, areaName) {
-            if (changes.salesforceApiVersion) {
-                CSH_APIVERSION = versionPattern.test(changes.salesforceApiVersion.newValue) ? changes.salesforceApiVersion.newValue : '60.0';
-                console.log('Offscreen - API Version changed:', CSH_APIVERSION);
-            }
-        });
-    } else {
-        console.warn('Chrome storage API not available, using default API version:', CSH_APIVERSION);
+            // Listen for API version changes
+            chrome.storage.onChanged.addListener(function (changes, areaName) {
+                if (changes.salesforceApiVersion) {
+                    CSH_APIVERSION = versionPattern.test(changes.salesforceApiVersion.newValue) ? changes.salesforceApiVersion.newValue : '60.0';
+                    console.log('Offscreen - API Version changed:', CSH_APIVERSION);
+                }
+            });
+
+            console.log('Chrome storage API initialized successfully');
+        } else {
+            console.log('Chrome storage API not available, using default API version:', CSH_APIVERSION);
+        }
+    } catch (err) {
+        console.log('Error initializing storage API:', err.message, '- using default API version:', CSH_APIVERSION);
     }
 
     // Notify service worker that we're ready

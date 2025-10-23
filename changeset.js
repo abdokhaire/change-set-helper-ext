@@ -4,6 +4,7 @@ var nameColumn = null;
 var numCallsInProgress = 0;
 var totalComponentCount = 0; // Track total rows loaded for pagination decisions
 var isLoadingMorePages = false; // Flag to indicate we're still loading pages in background
+var cachedMetadataResults = []; // Store metadata results to reuse during pagination
 
 var entityTypeMap = {
     'TabSet': 'CustomApplication',
@@ -140,7 +141,31 @@ function processListResults(response) {
     }
     var len = results ? results.length : 0;
 
+    // Cache metadata results for reuse during pagination
+    // Merge new results with cached results (dedupe by id)
     for (i = 0; i < len; i++) {
+        var existingIndex = cachedMetadataResults.findIndex(r => r.id === results[i].id);
+        if (existingIndex === -1) {
+            cachedMetadataResults.push(results[i]);
+        }
+    }
+
+    // Apply metadata to matching rows in the table
+    applyMetadataToRows(results);
+
+    numCallsInProgress--;
+
+    // Only create table if it doesn't exist yet (first time)
+    // During progressive loading, table is already created
+    if (numCallsInProgress <= 0 && !changeSetTable) {
+        createDataTable();
+    }
+
+}
+
+// Apply metadata to rows in the table
+function applyMetadataToRows(results) {
+    for (i = 0; i < results.length; i++) {
         shortid = results[i].id.slice(0, -3);
         var matchingInput = $("input[value='" + shortid + "']");
         dateMod = new Date(results[i].lastModifiedDate);
@@ -156,13 +181,7 @@ function processListResults(response) {
         matchingInput.first().closest('tr').children('td:eq(7)').text(fullName);
         matchingInput.first().closest('tr').children('td:eq(7)').attr("data-fullName", fullName);
         matchingInput.first().closest('tr').children('td:eq(7)').addClass("fullNameClass");
-
     }
-    numCallsInProgress--;
-    if (numCallsInProgress <= 0) {
-        createDataTable();
-    }
-
 }
 
 function jq(myid) {
@@ -234,7 +253,7 @@ function createDataTable() {
     // Enable pagination for large datasets to improve performance
     // Enable if: 1) We already have enough rows, OR 2) We're still loading more pages (will exceed threshold)
     var enablePaging = totalComponentCount >= ENABLE_PAGINATION_THRESHOLD || isLoadingMorePages;
-    var domLayout = enablePaging ? 'lprti' : 'lrti'; // Add 'p' for pagination controls
+    var domLayout = enablePaging ? 'lprtip' : 'lrti'; // 'p' at top and bottom for pagination controls
 
     if (enablePaging) {
         if (isLoadingMorePages) {
@@ -497,6 +516,9 @@ function deployLogout() {
 
 //This is the part that runs when loaded!
 
+// Clear cached metadata for fresh load
+cachedMetadataResults = [];
+
 var selectedEntityType = $('#entityType').val();
 var changeSetId = $("#id").val();
 var listTableLength = $("table.list tr.dataRow").length;
@@ -511,166 +533,258 @@ var nextPageLsr = 1000;
 var shouldContinuePagination = false;
 var ENABLE_PAGINATION_THRESHOLD = 1500; // Enable DataTables paging above this threshold
 
-// Show initial confirmation for large datasets
-if (listTableLength >= 1000) {
-    var confirmMsg = "There are more than 1,000 rows. Would you like to load all pages?\n\n";
-    confirmMsg += "Click OK to continue, Cancel to work with the first 1,000 rows.";
-
-    if (confirm(confirmMsg)) {
-        shouldContinuePagination = true;
-        isLoadingMorePages = true; // Flag that we're loading additional pages
-
-        // Create progress indicator with animated indeterminate progress bar
-        var progressHtml = `
-            <style>
-                @keyframes csh-indeterminate {
-                    0% { left: -35%; right: 100%; }
-                    60% { left: 100%; right: -90%; }
-                    100% { left: 100%; right: -90%; }
-                }
-                .csh-progress-indeterminate {
-                    position: absolute;
-                    background-color: #0070d2;
-                    top: 0;
-                    bottom: 0;
-                    animation: csh-indeterminate 1.5s cubic-bezier(0.65, 0.815, 0.735, 0.395) infinite;
-                }
-                .csh-progress-determinate {
-                    transition: width 0.3s ease;
-                }
-            </style>
-            <div id="csh-pagination-progress" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
-                 background: white; border: 3px solid #0070d2; border-radius: 8px; padding: 20px; z-index: 10000;
-                 box-shadow: 0 4px 16px rgba(0,0,0,0.3); min-width: 400px;">
-                <h3 style="margin: 0 0 15px 0; color: #0070d2;">Loading Components...</h3>
-                <div style="margin-bottom: 10px;">
-                    <div style="background: #f3f3f3; border-radius: 4px; height: 24px; overflow: hidden; position: relative;">
-                        <div id="csh-progress-bar" class="csh-progress-indeterminate"></div>
-                    </div>
-                </div>
-                <div id="csh-progress-text" style="margin-bottom: 10px; color: #333;">
-                    Loaded: <strong>1,000</strong> rows | Current page: <strong>1</strong>
-                </div>
-                <div id="csh-progress-estimate" style="margin-bottom: 15px; font-size: 12px; color: #666;">
-                    Calculating...
-                </div>
-                <button id="csh-cancel-pagination" style="background: #c23934; color: white; border: none;
-                        padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">
-                    Cancel Loading
-                </button>
+// Show loading overlay and fetch metadata FIRST before showing any rows
+if (selectedEntityType in entityTypeMap) {
+    // Show loading spinner
+    var loadingHtml = `
+        <style>
+            @keyframes csh-spinner {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+        </style>
+        <div id="csh-loading-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+             background: rgba(0,0,0,0.5); z-index: 9999; display: flex; align-items: center; justify-content: center;">
+            <div style="background: white; border: 3px solid #0070d2; border-radius: 8px; padding: 30px;
+                 text-align: center; box-shadow: 0 4px 16px rgba(0,0,0,0.3);">
+                <div style="width: 60px; height: 60px; border: 6px solid #f3f3f3; border-top: 6px solid #0070d2;
+                     border-radius: 50%; margin: 0 auto 20px; animation: csh-spinner 1s linear infinite;"></div>
+                <h3 style="margin: 0 0 10px 0; color: #0070d2;">Loading Metadata...</h3>
+                <p style="margin: 0; color: #666;">Please wait while we fetch component details</p>
             </div>
-            <div id="csh-pagination-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
-                 background: rgba(0,0,0,0.5); z-index: 9999;"></div>
-        `;
-        $('body').append(progressHtml);
+        </div>
+    `;
+    $('body').append(loadingHtml);
 
-        // Add cancel handler
-        $('#csh-cancel-pagination').click(function() {
-            shouldContinuePagination = false;
-            $('#csh-pagination-progress').remove();
-            $('#csh-pagination-overlay').remove();
+    $("#editPage").addClass("lowOpacity");
+    $("#bodyCell").addClass("changesetloading");
+
+    // Fetch metadata FIRST
+    chrome.runtime.sendMessage({
+        "oauth": "connectToLocal",
+        "sessionId": sessionId,
+        "serverUrl": serverUrl
+    }, function (response) {
+        // Check for Chrome runtime errors only
+        if (chrome.runtime.lastError) {
+            console.error('OAuth connection failed:', chrome.runtime.lastError);
+            $('#csh-loading-overlay').remove();
+            alert('Failed to connect to Salesforce. Please refresh the page and try again.\n\nError: ' +
+                  chrome.runtime.lastError.message);
             $("#editPage").removeClass("lowOpacity");
             $("#bodyCell").removeClass("changesetloading");
-            // Continue with whatever we have
-            if (selectedEntityType in entityTypeMap) {
-                chrome.runtime.sendMessage({
-                    "oauth": "connectToLocal",
-                    "sessionId": sessionId,
-                    "serverUrl": serverUrl
-                }, function (response) {
-                    getMetaData(processListResults);
-                });
-            }
-        });
+            return;
+        }
 
-        $("#editPage").addClass("lowOpacity");
-        $("#bodyCell").addClass("changesetloading");
+        // Check for explicit error in response
+        if (response && response.error) {
+            console.error('OAuth connection failed:', response.error);
+            $('#csh-loading-overlay').remove();
+            alert('Failed to connect to Salesforce. Please refresh the page and try again.\n\nError: ' + response.error);
+            $("#editPage").removeClass("lowOpacity");
+            $("#bodyCell").removeClass("changesetloading");
+            return;
+        }
 
-        // Async recursive function to fetch pages
-        var totalRowsLoaded = 1000;
-        var currentPage = 1;
-        var startTime = Date.now();
-        var tableInitialized = false;
+        console.log('Fetching metadata before loading rows for type:', selectedEntityType);
 
-        async function fetchNextPage() {
-            // Initialize table with first 1000 rows immediately (don't wait for all pages)
-            if (!tableInitialized && currentPage === 1) {
-                tableInitialized = true;
-                totalComponentCount = totalRowsLoaded; // Will be updated as more rows load
-                console.log(`Initializing table with first ${totalRowsLoaded} rows...`);
+        try {
+            // Custom callback that waits for all metadata calls to complete
+            getMetaData(function(metadataResponse) {
+                // Process and cache the metadata!
+                processListResults(metadataResponse);
 
-                // Initialize table immediately so user sees it right away
-                startMetadataLoading();
+                // Check if ALL metadata calls are complete
+                if (numCallsInProgress <= 0) {
+                    console.log('All metadata loaded and cached!');
 
-                // Update progress to show table is visible
-                $('#csh-progress-text').html(
-                    `<span style="color: #16844c;">✓ Table visible with ${totalRowsLoaded.toLocaleString()} rows</span><br>` +
-                    `Loading more in background...`
-                );
-            }
+                    // Metadata successfully loaded and cached!
+                    $('#csh-loading-overlay').remove();
 
-            if (!shouldContinuePagination || listTableLength < 1000) {
-                // Done loading all pages - cleanup
-                $('#csh-pagination-progress').remove();
-                $('#csh-pagination-overlay').remove();
-
-                // Final update
-                totalComponentCount = totalRowsLoaded;
-                isLoadingMorePages = false; // Clear the flag - pagination complete
-                console.log(`Pagination complete: ${totalComponentCount} total rows loaded`);
-
-                // Redraw table to show final count
-                if (changeSetTable) {
-                    changeSetTable.draw();
-                }
-
-                $("#editPage").removeClass("lowOpacity");
-                $("#bodyCell").removeClass("changesetloading");
-                return;
-            }
-
-            try {
-                // Use async AJAX
-                const data = await $.ajax({
-                    url: nextPageHref,
-                    data: {
-                        rowsperpage: 1000,
-                        isdtp: 'mn',
-                        lsr: nextPageLsr,
-                        id: changeSetId,
-                        entityType: selectedEntityType
-                    },
-                    async: true  // Non-blocking!
-                });
-
-                var parsedResponse = $(data);
-                var nextTable = parsedResponse.find("table.list tr.dataRow");
-
-                // If table is already initialized, add columns to new rows before appending
-                if (tableInitialized && selectedEntityType in entityTypeMap) {
-                    addColumnsToRows(nextTable);
-                }
-
-                nextTable.appendTo("table.list tbody");
-                listTableLength = nextTable.length;
-                nextPageLsr = nextPageLsr + listTableLength;
-                totalRowsLoaded += listTableLength;
-                currentPage++;
-
-                // If table is initialized, add new rows to DataTable incrementally
-                if (tableInitialized && changeSetTable) {
-                    // Add new rows to DataTable
-                    var newRowNodes = nextTable.toArray();
-                    changeSetTable.rows.add(newRowNodes);
-
-                    // Batch draw updates: only redraw every 5 pages or on last page for better performance
-                    if (currentPage % 5 === 0 || listTableLength < 1000) {
-                        changeSetTable.draw(false); // draw(false) = no full redraw, faster
+                    // Check if we need pagination
+                    if (listTableLength >= 1000) {
+                        // Automatically load all pages without confirmation
+                        shouldContinuePagination = true;
+                        isLoadingMorePages = true;
+                        startPaginationWithMetadata();
+                    } else {
+                        // Less than 1000 rows - show immediately with metadata
+                        totalComponentCount = listTableLength;
+                        initializeTableWithMetadata();
                     }
-
-                    // Update the total count
-                    totalComponentCount = totalRowsLoaded;
                 }
+                // Otherwise, wait for more metadata calls to complete
+            });
+        } catch (error) {
+            console.error('Error during metadata fetch:', error);
+            $('#csh-loading-overlay').remove();
+            alert('An error occurred while fetching metadata. Please try again.\n\nError: ' + error.message);
+            $("#editPage").removeClass("lowOpacity");
+            $("#bodyCell").removeClass("changesetloading");
+        }
+    });
+} else {
+    // Non-mapped entity types - proceed without metadata
+    totalComponentCount = listTableLength;
+    startMetadataLoading();
+}
+
+// Function to start pagination after metadata is loaded
+function startPaginationWithMetadata() {
+    // Create progress indicator
+    var progressHtml = `
+        <style>
+            @keyframes csh-indeterminate {
+                0% { left: -35%; right: 100%; }
+                60% { left: 100%; right: -90%; }
+                100% { left: 100%; right: -90%; }
+            }
+            .csh-progress-indeterminate {
+                position: absolute;
+                background-color: #0070d2;
+                top: 0;
+                bottom: 0;
+                animation: csh-indeterminate 1.5s cubic-bezier(0.65, 0.815, 0.735, 0.395) infinite;
+            }
+            .csh-progress-determinate {
+                transition: width 0.3s ease;
+            }
+        </style>
+        <div id="csh-pagination-progress" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+             background: white; border: 3px solid #0070d2; border-radius: 8px; padding: 20px; z-index: 10000;
+             box-shadow: 0 4px 16px rgba(0,0,0,0.3); min-width: 400px;">
+            <h3 style="margin: 0 0 15px 0; color: #0070d2;">Loading Components...</h3>
+            <div style="margin-bottom: 10px;">
+                <div style="background: #f3f3f3; border-radius: 4px; height: 24px; overflow: hidden; position: relative;">
+                    <div id="csh-progress-bar" class="csh-progress-indeterminate"></div>
+                </div>
+            </div>
+            <div id="csh-progress-text" style="margin-bottom: 10px; color: #333;">
+                Loaded: <strong>1,000</strong> rows | Current page: <strong>1</strong>
+            </div>
+            <div id="csh-progress-estimate" style="margin-bottom: 15px; font-size: 12px; color: #666;">
+                Calculating...
+            </div>
+            <button id="csh-cancel-pagination" style="background: #c23934; color: white; border: none;
+                    padding: 8px 16px; border-radius: 4px; cursor: pointer; font-size: 14px;">
+                Cancel Loading
+            </button>
+        </div>
+        <div id="csh-pagination-overlay" style="position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+             background: rgba(0,0,0,0.5); z-index: 9999;"></div>
+    `;
+    $('body').append(progressHtml);
+
+    // Add cancel handler
+    $('#csh-cancel-pagination').click(function() {
+        shouldContinuePagination = false;
+        isLoadingMorePages = false; // Mark pagination as complete
+
+        // Finalize the table with rows loaded so far
+        if (changeSetTable) {
+            totalComponentCount = changeSetTable.rows().count();
+            changeSetTable.draw(); // Redraw to show final state
+        }
+
+        $('#csh-pagination-progress').remove();
+        $('#csh-pagination-overlay').remove();
+        $("#editPage").removeClass("lowOpacity");
+        $("#bodyCell").removeClass("changesetloading");
+
+        console.log(`Pagination cancelled by user. Table finalized with ${totalComponentCount} rows.`);
+    });
+
+    $("#editPage").addClass("lowOpacity");
+    $("#bodyCell").addClass("changesetloading");
+
+    // Async recursive function to fetch pages (metadata already loaded!)
+    var totalRowsLoaded = 1000;
+    var currentPage = 1;
+    var startTime = Date.now();
+    var tableInitialized = false;
+
+    async function fetchNextPage() {
+        // Initialize table with first 1000 rows immediately (metadata already applied!)
+        if (!tableInitialized && currentPage === 1) {
+            tableInitialized = true;
+            totalComponentCount = totalRowsLoaded;
+            console.log(`Initializing table with first ${totalRowsLoaded} rows with metadata...`);
+
+            // Setup and create table (metadata already applied to rows)
+            setupTable();
+            applyMetadataToRows(cachedMetadataResults); // Apply metadata to first 1000 rows
+            createDataTable();
+
+            // Update progress to show table is visible
+            $('#csh-progress-text').html(
+                `<span style="color: #16844c;">✓ Table visible with ${totalRowsLoaded.toLocaleString()} rows</span><br>` +
+                `Loading more in background...`
+            );
+        }
+
+        if (!shouldContinuePagination || listTableLength < 1000) {
+            // Done loading all pages - cleanup
+            $('#csh-pagination-progress').remove();
+            $('#csh-pagination-overlay').remove();
+
+            // Final update
+            totalComponentCount = totalRowsLoaded;
+            isLoadingMorePages = false;
+            console.log(`Pagination complete: ${totalComponentCount} total rows loaded`);
+
+            // Redraw table to show final count
+            if (changeSetTable) {
+                changeSetTable.draw();
+            }
+
+            $("#editPage").removeClass("lowOpacity");
+            $("#bodyCell").removeClass("changesetloading");
+
+            return;
+        }
+
+        try {
+            // Use async AJAX
+            const data = await $.ajax({
+                url: nextPageHref,
+                data: {
+                    rowsperpage: 1000,
+                    isdtp: 'mn',
+                    lsr: nextPageLsr,
+                    id: changeSetId,
+                    entityType: selectedEntityType
+                },
+                async: true
+            });
+
+            var parsedResponse = $(data);
+            var nextTable = parsedResponse.find("table.list tr.dataRow");
+
+            // Add columns to new rows
+            if (selectedEntityType in entityTypeMap) {
+                addColumnsToRows(nextTable);
+            }
+
+            // Add rows to DOM
+            nextTable.appendTo("table.list tbody");
+
+            // Apply cached metadata to these new rows
+            if (cachedMetadataResults.length > 0) {
+                applyMetadataToRows(cachedMetadataResults);
+            }
+
+            listTableLength = nextTable.length;
+            nextPageLsr = nextPageLsr + listTableLength;
+            totalRowsLoaded += listTableLength;
+            currentPage++;
+
+            // Add new rows to DataTable
+            if (changeSetTable) {
+                var newRowNodes = nextTable.toArray();
+                changeSetTable.rows.add(newRowNodes);
+                changeSetTable.draw(false);
+                totalComponentCount = totalRowsLoaded;
+            }
 
                 // Calculate time estimates
                 var now = Date.now();
@@ -721,23 +835,32 @@ if (listTableLength >= 1000) {
 
             } catch (error) {
                 console.error("Error fetching page:", error);
-                alert("Error loading page " + (currentPage + 1) + ". Continuing with " + totalRowsLoaded + " rows loaded.");
+                alert("Error loading page " + (currentPage + 1) + ". Table will display " + totalRowsLoaded + " rows loaded so far.");
                 shouldContinuePagination = false;
+                isLoadingMorePages = false; // Mark as complete
+
+                // Finalize table with rows loaded so far
+                if (changeSetTable) {
+                    totalComponentCount = totalRowsLoaded;
+                    changeSetTable.draw();
+                }
+
                 fetchNextPage(); // Trigger cleanup
             }
         }
 
-        // Start fetching (will initialize table after first iteration)
+        // Start fetching pages
         fetchNextPage();
-    } else {
-        // User cancelled pagination - proceed with first 1000 rows only
-        totalComponentCount = 1000;
-        startMetadataLoading();
-    }
-} else {
-    // Less than 1000 rows - proceed immediately (no pagination needed)
-    totalComponentCount = listTableLength;
-    startMetadataLoading();
+}
+
+// Function to initialize table with metadata already loaded (no pagination needed)
+function initializeTableWithMetadata() {
+    console.log(`Initializing table with ${totalComponentCount} rows with metadata...`);
+    setupTable();
+    applyMetadataToRows(cachedMetadataResults); // Apply metadata to all rows
+    createDataTable();
+    $("#editPage").removeClass("lowOpacity");
+    $("#bodyCell").removeClass("changesetloading");
 }
 
 // Function to start metadata loading after pagination is complete (or skipped)
@@ -752,6 +875,7 @@ function startMetadataLoading() {
             "sessionId": sessionId,
             "serverUrl": serverUrl
         }, function (response) {
+            console.log('Fetching metadata once for all components of type:', selectedEntityType);
             getMetaData(processListResults);
         });
     } else {

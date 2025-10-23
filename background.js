@@ -51,6 +51,49 @@ function stopKeepAlive() {
 // Offscreen document management
 let creating; // A global promise to avoid concurrency issues
 let offscreenReady = false;
+let offscreenInactivityTimer = null;
+const OFFSCREEN_INACTIVITY_TIMEOUT = 5 * 60 * 1000; // Close after 5 minutes of inactivity
+
+// Close offscreen document to free memory
+async function closeOffscreenDocument() {
+    try {
+        // Clear the timer
+        if (offscreenInactivityTimer) {
+            clearTimeout(offscreenInactivityTimer);
+            offscreenInactivityTimer = null;
+        }
+
+        // Check if any offscreen documents exist
+        if (chrome.runtime.getContexts) {
+            const existingContexts = await chrome.runtime.getContexts({
+                contextTypes: ['OFFSCREEN_DOCUMENT']
+            });
+
+            if (existingContexts.length > 0) {
+                console.log('Closing offscreen document to free memory');
+                await chrome.offscreen.closeDocument();
+                offscreenReady = false;
+                console.log('Offscreen document closed successfully');
+            } else {
+                console.log('No offscreen document to close');
+            }
+        }
+    } catch (err) {
+        console.log('Error closing offscreen document:', err.message);
+    }
+}
+
+// Reset inactivity timer - close offscreen after period of no use
+function resetOffscreenInactivityTimer() {
+    if (offscreenInactivityTimer) {
+        clearTimeout(offscreenInactivityTimer);
+    }
+
+    offscreenInactivityTimer = setTimeout(() => {
+        console.log('Offscreen document inactive for', OFFSCREEN_INACTIVITY_TIMEOUT / 1000, 'seconds - closing to save memory');
+        closeOffscreenDocument();
+    }, OFFSCREEN_INACTIVITY_TIMEOUT);
+}
 
 //offscreen.html
 async function setupOffscreenDocument(path) {
@@ -90,6 +133,9 @@ async function setupOffscreenDocument(path) {
             await creating;
             creating = null;
             console.log('Offscreen document created successfully');
+
+            // Start inactivity timer
+            resetOffscreenInactivityTimer();
         }
     } catch (err) {
         console.error('Failed to create offscreen document:', err);
@@ -107,9 +153,15 @@ async function sendToOffscreen(message) {
     try {
         await setupOffscreenDocument('offscreen.html');
 
-        // Wait longer for offscreen document to fully load and initialize
-        // JSforce is a large library that needs time to load
-        await new Promise(resolve => setTimeout(resolve, 500));
+        // Reset inactivity timer on each API call
+        resetOffscreenInactivityTimer();
+
+        // Only wait for JSforce on first load
+        if (!offscreenReady) {
+            // Wait for offscreen document to fully load and JSforce to initialize
+            await new Promise(resolve => setTimeout(resolve, 500));
+            offscreenReady = true;
+        }
 
         return new Promise((resolve, reject) => {
             chrome.runtime.sendMessage(message, (response) => {

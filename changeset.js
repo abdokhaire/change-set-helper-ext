@@ -5,6 +5,7 @@ var numCallsInProgress = 0;
 var totalComponentCount = 0; // Track total rows loaded for pagination decisions
 var isLoadingMorePages = false; // Flag to indicate we're still loading pages in background
 var cachedMetadataResults = []; // Store metadata results to reuse during pagination
+var dynamicColumns = null; // Store dynamic column configuration based on metadata properties
 
 var entityTypeMap = {
     'TabSet': 'CustomApplication',
@@ -71,38 +72,105 @@ var entityFolderMap = {
 
 // Helper function to add columns to specific rows (avoids freezing with large datasets)
 function addColumnsToRows(rows) {
-    if (typeColumn.length == 0) {
-        rows.append("<td>&nbsp;</td>");
+    // Add dynamic columns based on metadata properties
+    // Use empty string since applyMetadataToRows() will immediately populate with actual values
+    if (dynamicColumns && dynamicColumns.length > 0) {
+        for (var i = 0; i < dynamicColumns.length; i++) {
+            rows.append("<td></td>"); // Will be populated by applyMetadataToRows
+        }
+    } else {
+        // Fallback to basic columns if metadata not loaded yet (should not happen in normal flow)
+        rows.append("<td></td>"); // Full Name
+        rows.append("<td></td>"); // Last Modified Date
+        rows.append("<td></td>"); // Last Modified By Name
     }
-    rows.append("<td>Unknown</td>"); // Folder
-    rows.append("<td>Unknown</td>"); // Date Modified
-    rows.append("<td>Unknown</td>"); // Modified by
-    rows.append("<td>&nbsp;</td>");  // Compare Date Modified
-    rows.append("<td>&nbsp;</td>");  // Compare Modified by
-    rows.append("<td>Unknown</td>"); // Full name
 }
 
 function setupTable() {
+    console.log('========================================');
+    console.log('setupTable: Starting table setup');
+
     typeColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Type')");
     nameColumn = $("table.list>tbody>tr.headerRow>th>a:contains('Name')");
 
-    // Add header columns (only once)
-    if (typeColumn.length == 0) {
-        $("table.list tr.headerRow").append("<td>&nbsp;</td>");
+    console.log('setupTable: Type column exists:', typeColumn.length > 0);
+    console.log('setupTable: Name column exists:', nameColumn.length > 0);
+
+    // Log original header structure
+    var originalHeaders = [];
+    $("table.list tr.headerRow th, table.list tr.headerRow td").each(function(index) {
+        var text = $(this).text().trim();
+        var linkText = $(this).find('a').text().trim();
+        originalHeaders.push(index + ':' + (linkText || text || 'empty'));
+    });
+    console.log('Original headers:', originalHeaders.join(' | '));
+
+    // Add header columns dynamically based on metadata properties
+    // Note: We don't add an empty Type column when it doesn't exist - we just skip it
+
+    // Add dynamic columns from metadata
+    if (dynamicColumns && dynamicColumns.length > 0) {
+        console.log('setupTable: Adding', dynamicColumns.length, 'dynamic columns');
+        for (var i = 0; i < dynamicColumns.length; i++) {
+            $("table.list tr.headerRow").append("<td>" + dynamicColumns[i].headerLabel + "</td>");
+            console.log('  - Added column:', dynamicColumns[i].headerLabel);
+        }
+    } else {
+        console.log('setupTable: WARNING - No dynamic columns defined! Using fallback columns.');
+        // Fallback to basic columns if metadata not loaded yet
+        $("table.list tr.headerRow").append("<td>Full Name</td>");
+        $("table.list tr.headerRow").append("<td>Last Modified Date</td>");
+        $("table.list tr.headerRow").append("<td>Last Modified By Name</td>");
     }
-    $("table.list tr.headerRow").append("<td>Folder</td>");
-    $("table.list tr.headerRow").append("<td>Date Modified</td>");
-    $("table.list tr.headerRow").append("<td>Modified by</td>");
-    $("table.list tr.headerRow").append("<td><span class='compareOrgName'></span> Date Modified</td>");
-    $("table.list tr.headerRow").append("<td><span class='compareOrgName'></span> Modified by</td>");
-    $("table.list tr.headerRow").append("<td>Full name</td>");
+
+    // Log new header structure
+    var newHeaders = [];
+    $("table.list tr.headerRow th, table.list tr.headerRow td").each(function(index) {
+        var text = $(this).text().trim();
+        var linkText = $(this).find('a').text().trim();
+        newHeaders.push(index + ':' + (linkText || text || 'empty'));
+    });
+    console.log('After adding headers:', newHeaders.join(' | '));
 
     // Add columns only to existing rows (not ALL rows to avoid freeze)
     var existingRows = $("table.list tr.dataRow");
+    console.log('setupTable: Found', existingRows.length, 'data rows to update');
+
+    // Log first row BEFORE adding columns
+    if (existingRows.length > 0) {
+        var firstRowBefore = $(existingRows[0]).find('td').length;
+        console.log('First row cell count BEFORE addColumnsToRows:', firstRowBefore);
+    }
+
     addColumnsToRows(existingRows);
 
+    // Log first row AFTER adding columns
+    if (existingRows.length > 0) {
+        var firstRowAfter = $(existingRows[0]).find('td').length;
+        console.log('First row cell count AFTER addColumnsToRows:', firstRowAfter);
+
+        // Log each cell
+        var cells = [];
+        $(existingRows[0]).find('td').each(function(index) {
+            var text = $(this).text().trim();
+            cells.push(index + ':' + (text.substring(0, 15) || 'empty'));
+        });
+        console.log('First row cells:', cells.join(' | '));
+    }
+
     var changeSetHead = $('<thead></thead>').prependTo('table.list').append($('table.list tr:first'));
-    changeSetHead.after('<tfoot><tr><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr></tfoot>');
+
+    // Generate footer with correct number of columns
+    var totalColumns = $("table.list thead tr th, table.list thead tr td").length;
+    var footerCells = '';
+    for (var i = 0; i < totalColumns; i++) {
+        footerCells += '<td></td>';
+    }
+    changeSetHead.after('<tfoot><tr>' + footerCells + '</tr></tfoot>');
+    console.log('setupTable: Generated footer with', totalColumns, 'columns');
+
+    console.log('setupTable: Moved header to thead');
+    console.log('========================================');
 
     var gotoloc1 = "'/" + $("#id").val() + "?tab=PackageComponents&rowsperpage=5000'";
     $('input[name="cancel"]')
@@ -130,16 +198,150 @@ function convertToMoment(stringToconvert) {
     return momentDate;
 }
 
+// Convert camelCase to Capital Case (e.g., "lastModifiedDate" -> "Last Modified Date")
+function camelCaseToCapitalCase(str) {
+    // Handle empty or invalid strings
+    if (!str || typeof str !== 'string') return str;
+
+    // Insert space before capital letters and capitalize first letter
+    var result = str
+        .replace(/([A-Z])/g, ' $1')  // Add space before capitals
+        .replace(/^./, function(char) { return char.toUpperCase(); })  // Capitalize first letter
+        .trim();
+
+    return result;
+}
+
+// Check if a value is a Salesforce ID (15 or 18 character alphanumeric string)
+function isSalesforceId(value) {
+    if (typeof value !== 'string') return false;
+
+    // Salesforce IDs are either 15 or 18 characters, alphanumeric
+    var length = value.length;
+    if (length !== 15 && length !== 18) return false;
+
+    // Check if it's alphanumeric (Salesforce IDs don't contain special characters)
+    return /^[a-zA-Z0-9]+$/.test(value);
+}
+
+// Determine which columns to add dynamically based on metadata properties
+function determineMetadataColumns(metadataRecord) {
+    if (!metadataRecord) {
+        console.log('determineMetadataColumns: No metadata record provided');
+        return [];
+    }
+
+    console.log('========================================');
+    console.log('determineMetadataColumns: Analyzing metadata properties');
+    console.log('Sample metadata record:', metadataRecord);
+
+    var columns = [];
+
+    // Define which properties to include and in what order
+    // Skip certain properties that aren't useful for display
+    // fullName is skipped because the table already has a "Name" column
+    var skipProperties = ['id', 'type', 'fileName', 'manageableState', 'namespacePrefix', 'fullName'];
+
+    // Preferred order for common properties
+    // Note: ID columns (createdById, lastModifiedById) are automatically filtered out
+    // Note: fullName is excluded (already have "Name" column in Salesforce table)
+    var propertyOrder = [
+        'createdDate',
+        'createdByName',
+        'lastModifiedDate',
+        'lastModifiedByName'
+    ];
+
+    // First add properties in preferred order if they exist
+    for (var i = 0; i < propertyOrder.length; i++) {
+        var prop = propertyOrder[i];
+        console.log('  - Checking property:', prop, 'exists:', metadataRecord.hasOwnProperty(prop), 'value:', metadataRecord[prop]);
+
+        if (metadataRecord.hasOwnProperty(prop) && metadataRecord[prop] !== undefined) {
+            // Skip if the value is a Salesforce ID
+            if (isSalesforceId(metadataRecord[prop])) {
+                console.log('    → Skipping (Salesforce ID format)');
+                continue;
+            }
+
+            console.log('    → Adding column:', prop);
+            columns.push({
+                propertyName: prop,
+                headerLabel: camelCaseToCapitalCase(prop),
+                isDate: prop.toLowerCase().includes('date')
+            });
+        } else {
+            console.log('    → Property not found or undefined');
+        }
+    }
+
+    // Then add any remaining properties not already included
+    for (var prop in metadataRecord) {
+        if (metadataRecord.hasOwnProperty(prop) &&
+            skipProperties.indexOf(prop) === -1 &&
+            propertyOrder.indexOf(prop) === -1 &&
+            metadataRecord[prop] !== undefined) {
+
+            // Skip if the value is a Salesforce ID
+            if (isSalesforceId(metadataRecord[prop])) {
+                console.log('  - Skipping column', prop, '(Salesforce ID format)');
+                continue;
+            }
+
+            columns.push({
+                propertyName: prop,
+                headerLabel: camelCaseToCapitalCase(prop),
+                isDate: prop.toLowerCase().includes('date')
+            });
+        }
+    }
+
+    console.log('========================================');
+    console.log('FINAL COLUMN LIST (' + columns.length + ' columns):');
+    for (var i = 0; i < columns.length; i++) {
+        console.log('  ' + i + ': ' + columns[i].propertyName + ' -> "' + columns[i].headerLabel + '" (date: ' + columns[i].isDate + ')');
+    }
+    console.log('========================================');
+
+    return columns;
+}
+
 
 function processListResults(response) {
-    //console.log(response);
+    console.log('========================================');
+    console.log('processListResults: Received response from JSforce');
+    console.log('Response type:', typeof response);
+    console.log('Has results:', !!response.results);
+
     var results = [];
     if (response.results && !Array.isArray(response.results)) {
         results.push(response.results);
+        console.log('Single result converted to array');
     } else {
         results = response.results;
+        console.log('Results is already array');
     }
     var len = results ? results.length : 0;
+    console.log('Processing', len, 'metadata results from JSforce');
+
+    // Log first few results to see data structure
+    if (len > 0) {
+        console.log('First JSforce result:', results[0]);
+        if (len > 1) {
+            console.log('Second JSforce result:', results[1]);
+        }
+
+        // Determine dynamic columns from first metadata record (only once)
+        var isFirstTime = !dynamicColumns;
+        if (isFirstTime && results[0]) {
+            dynamicColumns = determineMetadataColumns(results[0]);
+            console.log('Dynamic columns determined:', dynamicColumns.length, 'columns');
+
+            // Setup table structure with dynamic columns (first time only)
+            console.log('Setting up table with dynamic columns...');
+            setupTable();
+        }
+    }
 
     // Cache metadata results for reuse during pagination
     // Merge new results with cached results (dedupe by id)
@@ -149,39 +351,150 @@ function processListResults(response) {
             cachedMetadataResults.push(results[i]);
         }
     }
+    console.log('Cached metadata now has', cachedMetadataResults.length, 'total records');
 
     // Apply metadata to matching rows in the table
     applyMetadataToRows(results);
 
     numCallsInProgress--;
+    console.log('numCallsInProgress:', numCallsInProgress);
 
     // Only create table if it doesn't exist yet (first time)
     // During progressive loading, table is already created
     if (numCallsInProgress <= 0 && !changeSetTable) {
+        console.log('All metadata calls complete - creating DataTable');
         createDataTable();
     }
+    console.log('========================================');
 
 }
 
 // Apply metadata to rows in the table
+// Uses same hardcoded indices as original version for consistency
 function applyMetadataToRows(results) {
-    for (i = 0; i < results.length; i++) {
-        shortid = results[i].id.slice(0, -3);
-        var matchingInput = $("input[value='" + shortid + "']");
-        dateMod = new Date(results[i].lastModifiedDate);
-        var fullName = results[i].fullName;
-        var folderName = fullName.substring(0, fullName.lastIndexOf("/"));
-        dateCreate = new Date(results[i].createdDate);
-
-        matchingInput.first().closest('tr').children('td:eq(2)').text(folderName);
-        matchingInput.first().closest('tr').children('td:eq(3)').text(convertDate(dateMod));
-        matchingInput.first().closest('tr').children('td:eq(4)').text(results[i].lastModifiedByName);
-        //matchingInput.first().closest('tr').children('td:eq(5)').text(convertDate(dateCreate));
-        //matchingInput.first().closest('tr').children('td:eq(6)').text(results[i].createdByName);
-        matchingInput.first().closest('tr').children('td:eq(7)').text(fullName);
-        matchingInput.first().closest('tr').children('td:eq(7)').attr("data-fullName", fullName);
-        matchingInput.first().closest('tr').children('td:eq(7)').addClass("fullNameClass");
+    if (!results || results.length === 0) {
+        console.log('applyMetadataToRows: No results to apply');
+        return;
     }
+
+    console.log('========================================');
+    console.log('applyMetadataToRows: Processing', results.length, 'metadata records');
+
+    // Log first metadata record to see structure
+    if (results.length > 0) {
+        console.log('Sample metadata record:', {
+            id: results[0].id,
+            fullName: results[0].fullName,
+            lastModifiedDate: results[0].lastModifiedDate,
+            lastModifiedByName: results[0].lastModifiedByName,
+            createdDate: results[0].createdDate,
+            createdByName: results[0].createdByName
+        });
+    }
+
+    // Log table structure
+    var sampleRow = $("table.list tr.dataRow").first();
+    if (sampleRow.length > 0) {
+        var cellCount = sampleRow.find('td').length;
+        console.log('Sample row has', cellCount, 'cells');
+
+        // Log each cell content
+        var cellContents = [];
+        sampleRow.find('td').each(function(index) {
+            var text = $(this).text().trim();
+            cellContents.push(index + ':' + (text.substring(0, 20) || 'empty'));
+        });
+        console.log('Sample row cells:', cellContents.join(' | '));
+    }
+
+    // Log header structure
+    var headers = [];
+    $("table.list thead tr th, table.list thead tr td").each(function(index) {
+        var text = $(this).text().trim();
+        var linkText = $(this).find('a').text().trim();
+        headers.push(index + ':' + (linkText || text || 'empty'));
+    });
+    console.log('Table headers:', headers.join(' | '));
+
+    for (i = 0; i < results.length; i++) {
+        // Normalize ID to 15 characters (Salesforce IDs can be 15 or 18 chars)
+        // 18-char IDs are just 15-char IDs with a 3-char case-safe suffix
+        shortid = results[i].id.substring(0, 15);
+        var matchingInput = $("input[value='" + shortid + "']");
+
+        // If not found with 15-char ID, try the full 18-char ID if available
+        if (matchingInput.length === 0 && results[i].id.length === 18) {
+            matchingInput = $("input[value='" + results[i].id + "']");
+        }
+
+        if (matchingInput.length === 0) {
+            if (i === 0) console.log('First metadata record: No matching row found for ID:', shortid, 'or', results[i].id);
+            continue;
+        }
+
+        var row = matchingInput.first().closest('tr');
+
+        // Calculate the starting column index for dynamic columns in row cells
+        // Row td cells: Name(0), EmptyType(1), Dynamic columns(2+)
+        // Note: Checkbox is in header but not in row td's
+        // Calculate base column count based on whether Type column exists
+        // Row structure: Name(td-0), [Type(td-1) if exists], Dynamic columns
+        var baseColumnCount = typeColumn.length > 0 ? 2 : 1;
+
+        // Log first row update
+        if (i === 0) {
+            console.log('Updating first row:');
+            console.log('  - typeColumn exists:', typeColumn.length > 0);
+            console.log('  - Base column count (td cells before dynamic):', baseColumnCount);
+            console.log('  - Dynamic columns:', dynamicColumns ? dynamicColumns.length : 0);
+            console.log('  - Row has', row.children('td').length, 'total td cells');
+        }
+
+        // Store fullName as data attribute on Name column for Compare functionality
+        // Name is at td index 0 in the row (checkbox is separate)
+        if (results[i].fullName) {
+            var nameCell = row.children('td:eq(0)');
+            nameCell.attr("data-fullName", results[i].fullName);
+            nameCell.addClass("fullNameClass");
+            if (i === 0) {
+                console.log('  - Stored fullName on Name column (td index 0):', results[i].fullName);
+            }
+        }
+
+        // Populate dynamic columns with metadata values
+        if (dynamicColumns && dynamicColumns.length > 0) {
+            for (var colIdx = 0; colIdx < dynamicColumns.length; colIdx++) {
+                var column = dynamicColumns[colIdx];
+                var cellIndex = baseColumnCount + colIdx;
+                var value = results[i][column.propertyName];
+
+                // Log first row details - BEFORE formatting
+                if (i === 0) {
+                    console.log('  - Column', colIdx, '(' + column.propertyName + '): raw value =', value, ', isDate =', column.isDate);
+                }
+
+                // Format the value based on column type
+                if (value !== undefined && value !== null) {
+                    if (column.isDate) {
+                        value = convertDate(new Date(value));
+                    }
+                } else {
+                    value = ''; // Empty for undefined/null values
+                }
+
+                var cell = row.children('td:eq(' + cellIndex + ')');
+                cell.text(value);
+
+                // Log first row details - AFTER formatting
+                if (i === 0) {
+                    console.log('    → Writing to cell index', cellIndex, ':', value);
+                }
+            }
+        }
+    }
+
+    console.log('applyMetadataToRows: Completed updating', results.length, 'rows');
+    console.log('========================================');
 }
 
 function jq(myid) {
@@ -191,43 +504,48 @@ function jq(myid) {
 function processCompareResults(results, env) {
     //console.log(results);
 
-    changeSetTable.column(2).visible(true);
-    changeSetTable.column(6).visible(true);
-    changeSetTable.column(7).visible(true);
+    // Use hardcoded column indices: 3=Folder, 4=DateMod, 6=CompDateMod, 7=CompModBy, 8=FullName
+    changeSetTable.column(3).visible(true);  // Folder
+    changeSetTable.column(6).visible(true);  // Compare Date Modified
+    changeSetTable.column(7).visible(true);  // Compare Modified by
+
     if (env == 'prod') {
         $('.compareOrgName').text('(Prod/Dev)');
     } else {
         $('.compareOrgName').text('(Sandbox)');
     }
+
     $(changeSetTable.column(8).header()).text('Full name (Click for diff)');
 
     for (i = 0; i < results.length; i++) {
         var fullName = results[i].fullName;
         var matchingInput = $('td[data-fullName = "' + fullName + '"]');
-        //var matchingInput = $( jq(fullName));
-        //console.debug(changeSetTable.cell(  jq(fullName) ));
+
         if (matchingInput.length > 0) {
             var rowIdx = changeSetTable.cell('td[data-fullName = "' + fullName + '"]').index().row;
 
-            //console.log(matchingInput);
-            //selector = "a[href='/" + shortid + "']";
             dateMod = new Date(results[i].lastModifiedDate);
-            console.debug(rowIdx);
-            console.debug(changeSetTable.row(rowIdx).column(6));
-            changeSetTable.cell(rowIdx, 6).data(convertDate(dateMod));
-            changeSetTable.cell(rowIdx, 7).data(results[i].lastModifiedByName);
-            changeSetTable.cell(rowIdx, 8).data('<a href="#">' + fullName + '</a>');
+
+            // Update compare columns with data from other org
+            changeSetTable.cell(rowIdx, 6).data(convertDate(dateMod));  // Compare Date Modified
+            changeSetTable.cell(rowIdx, 7).data(results[i].lastModifiedByName);  // Compare Modified by
+            changeSetTable.cell(rowIdx, 8).data('<a href="#">' + fullName + '</a>');  // Full name
+
             matchingInput.off("click");
             matchingInput.click(getContents);
 
-            var thisOrgDateMod = changeSetTable.cell(rowIdx, 4).data();
+            // Compare dates and highlight if this org is newer
+            var thisOrgDateMod = changeSetTable.cell(rowIdx, 4).data();  // Date Modified column
             if (moment(dateMod).diff(convertToMoment(thisOrgDateMod)) < 0) {
                 changeSetTable.cell(rowIdx, 4).node().style.color = "green";
             }
         }
     }
-    changeSetTable.column(2).visible(false);
-    var column = changeSetTable.column(7);
+
+    // Hide folder column, show compare modified by dropdown
+    changeSetTable.column(3).visible(false);  // Folder
+
+    var column = changeSetTable.column(7);  // Compare Modified by
     var select = $(column.footer()).find('select');
 
     select.find('option')
@@ -235,7 +553,7 @@ function processCompareResults(results, env) {
         .end()
         .append('<option value=""></option>');
 
-    column.data().unique().sort().each(function (d, j) {
+    column.data().unique().sort().each(function (d) {
         select.append('<option value="' + d + '">' + d + '</option>')
     });
 
@@ -245,10 +563,29 @@ function processCompareResults(results, env) {
 }
 
 function createDataTable() {
-    var hasFolder = false;
-    if (selectedEntityType in entityFolderMap) {
-        hasFolder = true;
+    // Prevent double initialization
+    var tableSelector = 'div.bPageBlock > div.pbBody > table.list';
+    if ($.fn.DataTable.isDataTable(tableSelector)) {
+        console.log('createDataTable: Table already initialized, getting existing instance');
+        changeSetTable = $(tableSelector).DataTable(); // Get existing instance
+
+        // Filters should already exist from first init via initComplete callback
+        // If they're missing, log a warning (shouldn't happen)
+        if ($('.dtsearch').length === 0) {
+            console.log('createDataTable: WARNING - Filters are missing (this should not happen)');
+        }
+
+        // Ensure clear filters button exists
+        if ($('.clearFilters').length === 0) {
+            console.log('createDataTable: Adding Clear Filters button');
+            $('<input style="float: left;"  value="Reset Search Filters" class="clearFilters btn" name="Reset Search Filters" title="Reset search filters" type="button" />').prependTo('div.rolodex');
+            $(".clearFilters").click(clearFilters);
+        }
+
+        return;
     }
+
+    console.log('createDataTable: Initializing DataTable for the first time');
 
     // Enable pagination for large datasets to improve performance
     // Enable if: 1) We already have enough rows, OR 2) We're still loading more pages (will exceed threshold)
@@ -263,26 +600,65 @@ function createDataTable() {
         }
     }
 
+    // Build dynamic column configuration
+    // Salesforce header includes checkbox column, so DataTables needs to know about it
+    // Header structure depends on whether Type column exists:
+    // - If Type exists: Checkbox(0), Name(1), Type(2), Dynamic columns(3+)
+    // - If Type doesn't exist: Checkbox(0), Name(1), Dynamic columns(2+)
+    var columnConfig = [
+        {"searchable": false, "orderable": false, "targets": 0}, //0: checkbox (in header but not in row tds)
+        null, //1: name
+    ];
+
+    // Add Type column to config only if it exists in the DOM
+    if (typeColumn.length > 0) {
+        columnConfig.push(null); //2: type
+    }
+
+    // Calculate base column count for dynamic column indices
+    var baseColumnCount = typeColumn.length > 0 ? 3 : 2; // checkbox, name, [optional type]
+
+    // Find the column to order by (default to first date column)
+    var orderByColumnIndex = baseColumnCount; // Default to first dynamic column
+
+    // Add dynamic columns
+    if (dynamicColumns && dynamicColumns.length > 0) {
+        console.log('createDataTable: Building column config for', dynamicColumns.length, 'dynamic columns');
+        for (var i = 0; i < dynamicColumns.length; i++) {
+            var colConfig = {};
+
+            // Mark date columns for proper sorting
+            if (dynamicColumns[i].isDate) {
+                colConfig.type = "date";
+                // Use lastModifiedDate for default ordering
+                if (dynamicColumns[i].propertyName === 'lastModifiedDate' && orderByColumnIndex === baseColumnCount) {
+                    orderByColumnIndex = baseColumnCount + i; // Base columns + dynamic column index
+                }
+            }
+
+            columnConfig.push(colConfig);
+            console.log('  - Column', (baseColumnCount + i), ':', dynamicColumns[i].propertyName, colConfig);
+        }
+    } else {
+        console.log('createDataTable: WARNING - No dynamic columns, using default column config');
+        // Fallback for basic columns
+        columnConfig.push(null); // Full Name
+        columnConfig.push({"type": "date"}); // Last Modified Date
+        columnConfig.push(null); // Last Modified By Name
+    }
+
+    console.log('createDataTable: Total columns:', columnConfig.length, ', Order by column:', orderByColumnIndex);
+
     //Create the datatable
     try {
-        changeSetTable = $('div.bPageBlock > div.pbBody > table.list').DataTable({
+        changeSetTable = $(tableSelector).DataTable({
             processing: true,
             paging: enablePaging,
             pageLength: 100,  // Show 100 rows per page when pagination is enabled
             dom: domLayout,
-            "order": [[4, "desc"]],
+            "order": [[orderByColumnIndex, "desc"]], // Order by lastModifiedDate if available
             "deferRender": true,  // Performance optimization for large datasets
-            "columns": [
-                {"searchable": false, "orderable": false}, //checkbox
-                null, //name
-                {"visible": typeColumn.length > 0}, //type
-                {"visible": hasFolder}, //folder
-                {"type": "date"}, //date mod
-                null, //mod by
-                {"type": "date", "visible": false}, //date create
-                {"visible": false}, //created by
-                null //full name
-            ],
+            "columns": columnConfig,
             initComplete: tableInitComplete
         });
 
@@ -349,10 +725,51 @@ function basicTableInitComplete() {
  When the list table is added, these functionas are added to the make the columns searchable and selectable.
  **/
 function tableInitComplete() {
+    // Calculate the starting index for dynamic columns based on whether Type exists
+    // Column structure: Checkbox(0), Name(1), [Type(2) if exists], Dynamic columns
+    var dynamicColumnsStartIndex = typeColumn.length > 0 ? 3 : 2;
+
     this.api().columns().every(function () {
         var column = this;
-        //Add select search dropdowns
-        if ((column.index() == 2) || column.index() == (3) || column.index() == (5) || column.index() == (7)) {
+        var colIndex = column.index();
+
+        // Determine if this column should have a filter
+        var shouldAddFilter = false;
+        var useTextSearch = false;
+        var useDropdown = false;
+
+        // Column 0: Checkbox - skip
+        if (colIndex === 0) {
+            return;
+        }
+        // Column 1: Name - text search
+        else if (colIndex === 1) {
+            shouldAddFilter = true;
+            useTextSearch = true;
+        }
+        // Column 2: Type - dropdown (only if Type column exists)
+        else if (colIndex === 2 && typeColumn.length > 0) {
+            shouldAddFilter = true;
+            useDropdown = true;
+        }
+        // Dynamic columns (starting at 2 or 3 depending on Type)
+        else if (colIndex >= dynamicColumnsStartIndex && dynamicColumns) {
+            var dynamicColIndex = colIndex - dynamicColumnsStartIndex; // Subtract base columns
+            if (dynamicColIndex < dynamicColumns.length) {
+                shouldAddFilter = true;
+                var colDef = dynamicColumns[dynamicColIndex];
+
+                // Date columns get text search, others get dropdown
+                if (colDef.isDate) {
+                    useTextSearch = true;
+                } else {
+                    useDropdown = true;
+                }
+            }
+        }
+
+        // Add dropdown filter
+        if (shouldAddFilter && useDropdown) {
             var select = $('<select class="dtsearch" ><option value=""></option></select>')
                 .appendTo($(column.footer()))
                 .on('change', function () {
@@ -363,17 +780,15 @@ function tableInitComplete() {
                     column
                         .search(val ? '^' + val + '$' : '', true, false)
                         .draw();
-                })
+                });
 
             column.data().unique().sort().each(function (d, j) {
                 select.append('<option value="' + d + '">' + d + '</option>')
             });
         }
-        ;
 
-        //add text search boxes
-        if ((column.index() == 1) || column.index() == (8) || column.index() == (6) || column.index() == (4)) {
-
+        // Add text search box
+        if (shouldAddFilter && useTextSearch) {
             var searchbox = $('<input class="dtsearch" type="text" placeholder="Search" />')
                 .appendTo($(column.footer()))
                 .on('keyup change', function () {
@@ -381,9 +796,7 @@ function tableInitComplete() {
                         .search($(this).val())
                         .draw();
                 });
-
         }
-        ;
     });
 }
 
@@ -516,8 +929,9 @@ function deployLogout() {
 
 //This is the part that runs when loaded!
 
-// Clear cached metadata for fresh load
+// Clear cached metadata and dynamic columns for fresh load
 cachedMetadataResults = [];
+dynamicColumns = null; // Reset so next entity type can determine its own columns
 
 var selectedEntityType = $('#entityType').val();
 var changeSetId = $("#id").val();
@@ -708,12 +1122,10 @@ function startPaginationWithMetadata() {
         if (!tableInitialized && currentPage === 1) {
             tableInitialized = true;
             totalComponentCount = totalRowsLoaded;
-            console.log(`Initializing table with first ${totalRowsLoaded} rows with metadata...`);
 
-            // Setup and create table (metadata already applied to rows)
-            setupTable();
-            applyMetadataToRows(cachedMetadataResults); // Apply metadata to first 1000 rows
-            createDataTable();
+            // Use shared initialization function
+            console.log(`Initializing table with first ${totalRowsLoaded} rows with metadata (pagination in progress)...`);
+            doTableInitialization();
 
             // Update progress to show table is visible
             $('#csh-progress-text').html(
@@ -853,12 +1265,25 @@ function startPaginationWithMetadata() {
         fetchNextPage();
 }
 
+// Shared function to initialize table with metadata
+function doTableInitialization() {
+    // setupTable() is now called from processListResults when dynamic columns are first determined
+    // So we don't call it here - it's already been called
+    // Just apply metadata and create DataTable
+    applyMetadataToRows(cachedMetadataResults);
+
+    // Only create table if it doesn't exist yet (prevent double initialization)
+    if (!changeSetTable) {
+        createDataTable();
+    } else {
+        console.log('DataTable already initialized, skipping createDataTable()');
+    }
+}
+
 // Function to initialize table with metadata already loaded (no pagination needed)
 function initializeTableWithMetadata() {
-    console.log(`Initializing table with ${totalComponentCount} rows with metadata...`);
-    setupTable();
-    applyMetadataToRows(cachedMetadataResults); // Apply metadata to all rows
-    createDataTable();
+    console.log(`Initializing table with ${totalComponentCount} rows with metadata (no pagination)...`);
+    doTableInitialization();
     $("#editPage").removeClass("lowOpacity");
     $("#bodyCell").removeClass("changesetloading");
 }
@@ -866,7 +1291,8 @@ function initializeTableWithMetadata() {
 // Function to start metadata loading after pagination is complete (or skipped)
 function startMetadataLoading() {
     if (selectedEntityType in entityTypeMap) {
-        setupTable();
+        // Don't call setupTable yet - wait until first metadata batch returns
+        // so we can determine dynamic columns from the metadata properties
         $("#editPage").addClass("lowOpacity");
         $("#bodyCell").addClass("changesetloading");
 
@@ -875,7 +1301,7 @@ function startMetadataLoading() {
             "sessionId": sessionId,
             "serverUrl": serverUrl
         }, function (response) {
-            console.log('Fetching metadata once for all components of type:', selectedEntityType);
+            console.log('Fetching metadata to determine table columns for type:', selectedEntityType);
             getMetaData(processListResults);
         });
     } else {

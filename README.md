@@ -228,8 +228,8 @@ change-set-helper-ext/
 │   └── [other libraries...]
 ├── *.png                      # Icons and screenshots
 ├── loading.gif                # Loading animation
-├── README.md                  # This file
-└── CLAUDE.md                  # Development guidelines
+└── README.md                  # This file
+
 ```
 
 ### Architecture
@@ -469,10 +469,7 @@ All source files are in the **root directory** except for external libraries whi
 - Check Salesforce API version compatibility
 
 ### Getting Help
-
-- **Email**: Contact Susan Bohme at [brainfield.initiative@gmail.com](mailto:brainfield.initiative@gmail.com)
 - **Issues**: Open an issue on the project repository
-- **Documentation**: Review the [CLAUDE.md](CLAUDE.md) file for technical details
 
 ---
 
@@ -537,13 +534,6 @@ This project builds upon the original work by Susan Bohme. Please respect the or
 - **Salesforce Community** - Feature requests and feedback
 - **JSforce Contributors** - Excellent Salesforce API library
 - **DataTables** - Powerful table management library
-
----
-
-## 📞 Contact
-
-**Original Author**: Susan Bohme
-**Email**: [brainfield.initiative@gmail.com](mailto:brainfield.initiative@gmail.com)
 
 ---
 

@@ -20,7 +20,7 @@ function restore_options() {
   chrome.storage.sync.get(['salesforceApiVersion']
   , function(items) {
     const versionPattern = RegExp('^[0-9][0-9]\.0$');
-    var apiversion = versionPattern.test(items.salesforceApiVersion) ? items.salesforceApiVersion : '48.0';
+    var apiversion = versionPattern.test(items.salesforceApiVersion) ? items.salesforceApiVersion : '60.0';
     document.getElementById('salesforceApiVersion').value = apiversion;
   });
 }

@@ -7,6 +7,15 @@ var isLoadingMorePages = false; // Flag to indicate we're still loading pages in
 var cachedMetadataResults = []; // Store metadata results to reuse during pagination
 var dynamicColumns = null; // Store dynamic column configuration based on metadata properties
 
+// Compare functionality column indices (set dynamically after table setup)
+var compareColumnIndices = {
+    folder: -1,              // Folder column (for folder-based entities)
+    lastModifiedDate: -1,    // This org's Last Modified Date
+    compareDateMod: -1,      // Compare org's Date Modified
+    compareModBy: -1,        // Compare org's Modified By
+    fullName: -1             // Full Name (clickable for diff)
+};
+
 var entityTypeMap = {
     'TabSet': 'CustomApplication',
     'ApexClass': 'ApexClass',
@@ -84,6 +93,12 @@ function addColumnsToRows(rows) {
         rows.append("<td></td>"); // Last Modified Date
         rows.append("<td></td>"); // Last Modified By Name
     }
+
+    // Add compare columns (empty initially, populated when compare is clicked)
+    rows.append("<td></td>"); // Folder
+    rows.append("<td></td>"); // Compare Date Modified
+    rows.append("<td></td>"); // Compare Modified By
+    rows.append("<td></td>"); // Full Name (for diff)
 }
 
 function setupTable() {
@@ -122,6 +137,13 @@ function setupTable() {
         $("table.list tr.headerRow").append("<td>Last Modified Date</td>");
         $("table.list tr.headerRow").append("<td>Last Modified By Name</td>");
     }
+
+    // Add compare columns (hidden initially, shown when compare is clicked)
+    $("table.list tr.headerRow").append("<td>Folder</td>");  // Hidden, used internally for folder-based entities
+    $("table.list tr.headerRow").append("<td class='compareOrgName'>Compare Date Modified</td>");
+    $("table.list tr.headerRow").append("<td class='compareOrgName'>Compare Modified By</td>");
+    $("table.list tr.headerRow").append("<td>Full Name</td>");  // For diff functionality
+    console.log('setupTable: Added 4 compare columns (hidden by default)');
 
     // Log new header structure
     var newHeaders = [];
@@ -491,6 +513,19 @@ function applyMetadataToRows(results) {
                 }
             }
         }
+
+        // Populate compare columns (folder field for folder-based entities)
+        // The compare columns are at the end: Folder, Compare Date Mod, Compare Mod By, Full Name
+        var compareColumnsStartIndex = baseColumnCount + (dynamicColumns ? dynamicColumns.length : 0);
+
+        // Folder column (for folder-based entities like Reports, Dashboards, etc.)
+        if (results[i].folder) {
+            var folderCell = row.children('td:eq(' + compareColumnsStartIndex + ')');
+            folderCell.text(results[i].folder);
+            if (i === 0) {
+                console.log('  - Populated folder cell at index', compareColumnsStartIndex, ':', results[i].folder);
+            }
+        }
     }
 
     console.log('applyMetadataToRows: Completed updating', results.length, 'rows');
@@ -502,20 +537,24 @@ function jq(myid) {
 }
 
 function processCompareResults(results, env) {
-    //console.log(results);
+    console.log('processCompareResults: Processing', results.length, 'compare results');
+    console.log('processCompareResults: Using column indices:', compareColumnIndices);
 
-    // Use hardcoded column indices: 3=Folder, 4=DateMod, 6=CompDateMod, 7=CompModBy, 8=FullName
-    changeSetTable.column(3).visible(true);  // Folder
-    changeSetTable.column(6).visible(true);  // Compare Date Modified
-    changeSetTable.column(7).visible(true);  // Compare Modified by
+    // Show compare columns (use dynamic indices)
+    changeSetTable.column(compareColumnIndices.folder).visible(true);  // Folder (temporarily shown for processing)
+    changeSetTable.column(compareColumnIndices.compareDateMod).visible(true);  // Compare Date Modified
+    changeSetTable.column(compareColumnIndices.compareModBy).visible(true);  // Compare Modified By
+    changeSetTable.column(compareColumnIndices.fullName).visible(true);  // Full Name for diff
 
+    // Update header labels based on environment
     if (env == 'prod') {
         $('.compareOrgName').text('(Prod/Dev)');
     } else {
         $('.compareOrgName').text('(Sandbox)');
     }
 
-    $(changeSetTable.column(8).header()).text('Full name (Click for diff)');
+    // Update Full Name column header
+    $(changeSetTable.column(compareColumnIndices.fullName).header()).text('Full name (Click for diff)');
 
     for (i = 0; i < results.length; i++) {
         var fullName = results[i].fullName;
@@ -526,26 +565,32 @@ function processCompareResults(results, env) {
 
             dateMod = new Date(results[i].lastModifiedDate);
 
-            // Update compare columns with data from other org
-            changeSetTable.cell(rowIdx, 6).data(convertDate(dateMod));  // Compare Date Modified
-            changeSetTable.cell(rowIdx, 7).data(results[i].lastModifiedByName);  // Compare Modified by
-            changeSetTable.cell(rowIdx, 8).data('<a href="#">' + fullName + '</a>');  // Full name
+            // Update compare columns with data from other org (use dynamic indices)
+            changeSetTable.cell(rowIdx, compareColumnIndices.compareDateMod).data(convertDate(dateMod));
+            changeSetTable.cell(rowIdx, compareColumnIndices.compareModBy).data(results[i].lastModifiedByName);
+            changeSetTable.cell(rowIdx, compareColumnIndices.fullName).data('<a href="#">' + fullName + '</a>');
 
-            matchingInput.off("click");
-            matchingInput.click(getContents);
+            // Make Full Name cell clickable for diff
+            var fullNameCell = changeSetTable.cell(rowIdx, compareColumnIndices.fullName).node();
+            $(fullNameCell).off("click");
+            $(fullNameCell).click(getContents);
 
-            // Compare dates and highlight if this org is newer
-            var thisOrgDateMod = changeSetTable.cell(rowIdx, 4).data();  // Date Modified column
-            if (moment(dateMod).diff(convertToMoment(thisOrgDateMod)) < 0) {
-                changeSetTable.cell(rowIdx, 4).node().style.color = "green";
+            // Compare dates and highlight if this org is newer than other org
+            if (compareColumnIndices.lastModifiedDate >= 0) {
+                var thisOrgDateMod = changeSetTable.cell(rowIdx, compareColumnIndices.lastModifiedDate).data();
+                if (moment(dateMod).diff(convertToMoment(thisOrgDateMod)) < 0) {
+                    // Other org is older, so this org is newer - highlight in green
+                    changeSetTable.cell(rowIdx, compareColumnIndices.lastModifiedDate).node().style.color = "green";
+                }
             }
         }
     }
 
-    // Hide folder column, show compare modified by dropdown
-    changeSetTable.column(3).visible(false);  // Folder
+    // Hide folder column after processing
+    changeSetTable.column(compareColumnIndices.folder).visible(false);
 
-    var column = changeSetTable.column(7);  // Compare Modified by
+    // Populate Compare Modified By dropdown filter
+    var column = changeSetTable.column(compareColumnIndices.compareModBy);
     var select = $(column.footer()).find('select');
 
     select.find('option')
@@ -560,6 +605,7 @@ function processCompareResults(results, env) {
     $("#editPage").removeClass("lowOpacity");
     $("#bodyCell").removeClass("changesetloading");
 
+    console.log('processCompareResults: Completed');
 }
 
 function createDataTable() {
@@ -633,6 +679,8 @@ function createDataTable() {
                 // Use lastModifiedDate for default ordering
                 if (dynamicColumns[i].propertyName === 'lastModifiedDate' && orderByColumnIndex === baseColumnCount) {
                     orderByColumnIndex = baseColumnCount + i; // Base columns + dynamic column index
+                    // Store the index for compare functionality
+                    compareColumnIndices.lastModifiedDate = baseColumnCount + i;
                 }
             }
 
@@ -644,9 +692,23 @@ function createDataTable() {
         // Fallback for basic columns
         columnConfig.push(null); // Full Name
         columnConfig.push({"type": "date"}); // Last Modified Date
+        compareColumnIndices.lastModifiedDate = baseColumnCount + 1;
         columnConfig.push(null); // Last Modified By Name
     }
 
+    // Add compare columns (hidden initially)
+    var compareStartIndex = columnConfig.length;
+    compareColumnIndices.folder = compareStartIndex;
+    compareColumnIndices.compareDateMod = compareStartIndex + 1;
+    compareColumnIndices.compareModBy = compareStartIndex + 2;
+    compareColumnIndices.fullName = compareStartIndex + 3;
+
+    columnConfig.push({"visible": false}); // Folder (hidden, used internally)
+    columnConfig.push({"visible": false, "type": "date"}); // Compare Date Modified (hidden initially)
+    columnConfig.push({"visible": false}); // Compare Modified By (hidden initially)
+    columnConfig.push({"visible": false}); // Full Name for diff (hidden initially)
+
+    console.log('createDataTable: Added compare columns at indices:', compareColumnIndices);
     console.log('createDataTable: Total columns:', columnConfig.length, ', Order by column:', orderByColumnIndex);
 
     //Create the datatable
@@ -767,6 +829,26 @@ function tableInitComplete() {
                 }
             }
         }
+        // Compare columns (added after dynamic columns, hidden initially)
+        else if (colIndex === compareColumnIndices.folder) {
+            // Folder column - no filter needed
+            return;
+        }
+        else if (colIndex === compareColumnIndices.compareDateMod) {
+            // Compare Date Modified - text search
+            shouldAddFilter = true;
+            useTextSearch = true;
+        }
+        else if (colIndex === compareColumnIndices.compareModBy) {
+            // Compare Modified By - dropdown
+            shouldAddFilter = true;
+            useDropdown = true;
+        }
+        else if (colIndex === compareColumnIndices.fullName) {
+            // Full Name - text search
+            shouldAddFilter = true;
+            useTextSearch = true;
+        }
 
         // Add dropdown filter
         if (shouldAddFilter && useDropdown) {
@@ -874,9 +956,9 @@ function listMetaDataProxy(data, retFunc, isDefault) {
 
 function oauthLogin(env) {
     var env = $("#compareEnv :selected").val();
-
+    console.log('oauthLogin');
     chrome.runtime.sendMessage({'oauth': "connectToDeploy", environment: env}, function (response) {
-        //console.log(response);
+        console.log(response);
         $("#compareEnv").hide();
 
         $("#loggedInUsername").html(response.username);
@@ -1337,14 +1419,15 @@ function startMetadataLoading() {
 
 
 $(document).ready(function () {
-    $(".clearFilters").click(clearFilters);
-	$( "#logoutLink" ).click(deployLogout);
+    $(".clearFilters").on('click', clearFilters);
+	$( "#logoutLink" ).on('click', deployLogout);
 
-    $("#editPage").submit(function (event) {
+    $("#editPage").on('submit', function (event) {
         clearFilters();
         return true;
     });
-    $("#compareorg").click(oauthLogin);
+
+    $('input[name="cancel"]').parent().on('click','#compareorg' , oauthLogin);
 
     if (!sessionId) {
         $('.bDescription').append('<span style="background-color:yellow"><strong><br/> <br/>Sorry, currently for the Change Set Helper to work, please UNSET the Require HTTPOnly Attribute checkbox in Security -> Session Settings. Then logout and back in again.  </strong></span>')
